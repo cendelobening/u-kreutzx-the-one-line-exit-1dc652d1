@@ -1,10 +1,7 @@
-#!/usr/bin/env python3
-"""The One-Line Exit.
+"""Write a one-line resignation letter to the output directory.
 
-Writes a single original line — one funny resignation letter — to
-entry.txt in the output directory.
-
-Pure Python standard library only; no third-party packages.
+Pure standard library. The letter is a single line of at most 140
+characters, written as UTF-8 with no trailing newline.
 """
 
 import os
@@ -12,88 +9,79 @@ import stat
 import sys
 import tempfile
 
-# The line: an office worker quits by taking career advice from the
-# one colleague who never backs down — the printer. "Dear Boss"
-# opens it as a letter a person could actually send, "effective
-# today" keeps it formal, then the punchline turns the printer's
-# final jam into a role model worth imitating.
-LINE = (
-    "Dear Boss, I resign effective today \u2014 the printer jammed for "
-    "the last time, and I have decided to take its advice and stop "
-    "working too."
+LETTER = (
+    "Dear Boss, I hereby resign \u2014 I came for the dream job, "
+    "stayed for the free snacks, and I'm leaving because someone "
+    "ate the last biscuit."
 )
 
-OUTPUT_FILENAME = "entry.txt"
 MAX_CHARS = 140
 
 
-def validate(line: str) -> None:
-    """Check the line meets the competition gate.
-
-    Order matters: the whitespace-only case is reported on its own
-    before the leading/trailing-whitespace check, so the message
-    always describes the actual problem.
-    """
-    if not isinstance(line, str):
-        raise ValueError("line must be a string")
-    if not line.strip():
-        raise ValueError("line must not be only whitespace")
-    if not any(ch.isalpha() for ch in line):
-        raise ValueError("line must contain at least one letter")
-    if not (1 <= len(line) <= MAX_CHARS):
-        raise ValueError(
-            f"line must be 1-{MAX_CHARS} characters, got {len(line)}"
-        )
-    if line != line.strip():
-        raise ValueError("line must not have leading or trailing whitespace")
-    if "\n" in line or "\r" in line:
-        raise ValueError("line must be a single line")
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in line):
-        raise ValueError("line must not contain control characters")
+def check_letter(text):
+    if not isinstance(text, str):
+        raise ValueError("letter must be a string")
+    if not (1 <= len(text) <= MAX_CHARS):
+        raise ValueError("letter must be 1 to 140 characters")
+    if "\n" in text or "\r" in text:
+        raise ValueError("letter must be a single line")
+    if text != text.strip():
+        raise ValueError("letter must not have leading or trailing whitespace")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        raise ValueError("letter must not contain control characters")
+    if not any(ch.isalpha() for ch in text):
+        raise ValueError("letter must contain at least one letter")
 
 
-def main() -> int:
-    validate(LINE)
+def output_dir():
+    return os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
 
-    output_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
-    os.makedirs(output_dir, exist_ok=True)
-    target = os.path.join(output_dir, OUTPUT_FILENAME)
 
-    data = LINE.encode("utf-8")
-
-    # Write via a temp file in the same directory, then atomically rename
-    # so a reader never sees a half-written entry. chmod on the temp
-    # file before the rename (a fresh tempfile is 0600 by default) and
-    # again on the final path, so the graded file is world-readable.
-    fd, tmp_path = tempfile.mkstemp(
-        dir=output_dir, prefix=".entry-", suffix=".tmp"
-    )
+def write_atomic(directory, filename, payload):
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".entry-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
         os.chmod(tmp_path, 0o644)
-        os.replace(tmp_path, target)
-        os.chmod(target, 0o644)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.rename(tmp_path, os.path.join(directory, filename))
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
+    final_path = os.path.join(directory, filename)
+    os.chmod(final_path, 0o644)
+    return final_path
 
-    # Read back and verify byte-for-byte, UTF-8, no trailing newline.
-    with open(target, "rb") as fh:
-        written = fh.read()
-    if written != data:
-        raise RuntimeError("read-back bytes differ from intended bytes")
-    text = written.decode("utf-8")
+
+def verify(path, payload):
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if data != payload:
+        raise ValueError("written bytes do not match the letter")
+    text = data.decode("utf-8")
     if text.endswith("\n"):
-        raise RuntimeError("entry must not end with a newline")
-    mode = stat.S_IMODE(os.stat(target).st_mode)
+        raise ValueError("output must not end with a newline")
+    check_letter(text)
+    mode = stat.S_IMODE(os.stat(path).st_mode)
     if mode != 0o644:
-        raise RuntimeError(f"entry mode is {oct(mode)}, expected 0o644")
+        raise ValueError("output mode must be 0644")
+    return text
 
-    print(f"Wrote {len(text)} chars, {len(data)} bytes to {target}")
+
+def main():
+    check_letter(LETTER)
+    payload = LETTER.encode("utf-8")
+    directory = output_dir()
+    # Atomic write: a reader of entry.txt only ever sees the full
+    # letter or nothing, never a half-written file.
+    path = write_atomic(directory, "entry.txt", payload)
+    text = verify(path, payload)
+    print("wrote %s (%d chars, %d bytes, no trailing newline)" % (path, len(text), len(payload)))
     return 0
 
 
